@@ -12,17 +12,25 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def extract_video_id(url):
     """Extract video ID from various YouTube URL formats"""
-    parsed = urlparse(url)
-    if parsed.hostname == 'youtu.be':
-        return parsed.path[1:]
-    if parsed.hostname in ('www.youtube.com', 'youtube.com'):
-        if parsed.path == '/watch':
-            return parse_qs(parsed.query)['v'][0]
-        if parsed.path.startswith('/embed/'):
-            return parsed.path.split('/')[2]
-        if parsed.path.startswith('/v/'):
-            return parsed.path.split('/')[2]
-    return None
+    try:
+        # Clean the URL by removing any surrounding quotes
+        url = url.strip().strip('\'"')
+        parsed = urlparse(url)
+        if parsed.hostname == 'youtu.be':
+            return parsed.path[1:]
+        if parsed.hostname in ('www.youtube.com', 'youtube.com'):
+            if parsed.path == '/watch':
+                query_params = parse_qs(parsed.query)
+                if 'v' in query_params:
+                    return query_params['v'][0]
+            if parsed.path.startswith('/embed/'):
+                return parsed.path.split('/')[2]
+            if parsed.path.startswith('/v/'):
+                return parsed.path.split('/')[2]
+        return None
+    except Exception as e:
+        st.error(f"Error parsing YouTube URL: {str(e)}")
+        return None
 
 def get_transcript_text(youtube_url, language='en'):
     """Fetch and concatenate YouTube transcript"""
@@ -45,32 +53,35 @@ def get_transcript_text(youtube_url, language='en'):
         
         try:
             transcript_data = transcript.fetch()
+            if not transcript_data:
+                st.error("No transcript data received")
+                return None
+                
+            # Check if transcript_data is a FetchedTranscript object
+            if not hasattr(transcript_data, '__iter__'):
+                st.error("Received invalid transcript data format")
+                return None
+                
+            transcript_text = []
+            for entry in transcript_data:
+                try:
+                    if hasattr(entry, 'text') and entry.text:
+                        transcript_text.append(entry.text.strip())
+                    elif isinstance(entry, dict) and 'text' in entry and entry['text']:
+                        transcript_text.append(entry['text'].strip())
+                except Exception as e:
+                    continue
+            
+            if not transcript_text:
+                st.error("No valid transcript text found in the video")
+                return None
+                
+            return " ".join(transcript_text)
+            
         except Exception as e:
-            st.error(f"Failed to fetch transcript data: {str(e)}")
+            st.error(f"Error processing transcript data: {str(e)}")
             return None
             
-        if not transcript_data:
-            st.error("No transcript data received")
-            return None
-            
-        if not isinstance(transcript_data, list):
-            st.error("Received invalid transcript data format")
-            return None
-            
-        transcript_text = []
-        for entry in transcript_data:
-            try:
-                if isinstance(entry, dict) and 'text' in entry and entry['text']:
-                    transcript_text.append(entry['text'].strip())
-            except Exception as e:
-                continue
-        
-        if not transcript_text:
-            st.error("No valid transcript text found in the video")
-            return None
-            
-        return " ".join(transcript_text)
-        
     except Exception as e:
         st.error(f"Error fetching transcript: {str(e)}")
         return None
@@ -78,10 +89,22 @@ def get_transcript_text(youtube_url, language='en'):
 def generate_summary(transcript, prompt):
     """Generate summary using Gemini"""
     try:
-        model = genai.GenerativeModel('gemini-pro')
+        # Initialize the model with proper configuration
+        model = genai.GenerativeModel(model_name="gemini-pro")
         
+        # Generate content with proper error handling
         response = model.generate_content(prompt + transcript)
-        return response.text
+        
+        # Check if the response is valid
+        if response and hasattr(response, 'text'):
+            return response.text
+        else:
+            st.error("Invalid response from Gemini API")
+            return None
+            
+    except genai.types.generation_types.BlockedPromptException as e:
+        st.error(f"Content blocked by Gemini API safety filters: {str(e)}")
+        return None
     except Exception as e:
         st.error(f"AI Generation Error: {str(e)}")
         return None
